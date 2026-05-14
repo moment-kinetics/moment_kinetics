@@ -280,13 +280,17 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
         # ⋅  ⋅  ⋅  │  ⋅  │  ⋅  ⋅  │  b  │  a  a  a
         # ⋅  ⋅  ⋅  │  ⋅  │  ⋅  ⋅  │  b  │  a  a  a
 
-        outer_block_sizes = [outer_ngrid - 1]
-        push!(outer_block_sizes, 1)
-        for ielement ∈ 2:outer_nelement-1
-            push!(outer_block_sizes, outer_ngrid - 2)
+        if outer_nelement == 1
+            outer_block_sizes = [outer_ngrid]
+        else
+            outer_block_sizes = [outer_ngrid - 1]
             push!(outer_block_sizes, 1)
+            for ielement ∈ 2:outer_nelement-1
+                push!(outer_block_sizes, outer_ngrid - 2)
+                push!(outer_block_sizes, 1)
+            end
+            push!(outer_block_sizes, outer_ngrid - 1)
         end
-        push!(outer_block_sizes, outer_ngrid - 1)
 
         row_block_sizes = outer_block_sizes .* inner_row_dims_length
         column_block_sizes = outer_block_sizes .* inner_column_dims_length
