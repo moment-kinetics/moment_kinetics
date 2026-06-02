@@ -34,6 +34,8 @@ export get_pperp
 export get_qpar
 export get_rmom
 
+using LinearAlgebra: dot
+
 using ..type_definitions: mk_float
 using ..array_allocation: allocate_shared_float, allocate_bool, allocate_float
 using ..calculus: integral
@@ -42,11 +44,12 @@ using ..debugging
 using ..derivatives: derivative_z!, derivative_z_anyzv!, second_derivative_z!
 using ..derivatives: derivative_r!, second_derivative_r!
 using ..looping
+using ..gauss_legendre: gausslegendre_info
 using ..gyroaverages: gyro_operators, gyroaverage_pdf!
 using ..collision_frequencies: get_collision_frequency_ii
 using ..input_structs
 using ..moment_kinetics_structs: moments_ion_substruct, moments_electron_substruct,
-                                 moments_neutral_substruct
+                                 moments_neutral_substruct, coordinate
 using ..timer_utils
 
 
@@ -1135,6 +1138,143 @@ function calculate_ion_qpar_from_coll_krook!(qpar, density, upar, vth, dT_dz, z,
     return nothing
 end
 
+# Would be better to define this in boundary_conditions.jl, but that file depends on
+# velocity_moments, so cannot be imported first. This function is only used in the
+# following calculate_ion_dqpar_dz_from_coll_krook!(), so just put here for convenience.
+function apply_Neumann_z_bc_to_moment!(m::AbstractArray{mk_float,3}, z::coordinate,
+                                       z_spectral, lower_boundary_value=0.0,
+                                       upper_boundary_value=0.0)
+    if !isa(z_spectral, gausslegendre_info)
+        error("Neumann z boundary condition is only implemented for Gauss-Legendre discretization")
+    end
+
+    # See comments in `create_r_section()` for Neumann bc for notes on implementation.
+
+    @begin_s_r_region()
+
+    if z.irank == 0 && !z.periodic
+        # Lower boundary
+        Dmat = z_spectral.lobatto.Dmat
+        derivative_coefficients = @view Dmat[1,2:end]
+        Db = Dmat[1,1]
+        ngrid = z.ngrid
+
+        # Set the first point in z so that dm/dz is zero at the boundary.
+        iz = 1
+        @loop_s_r is ir begin
+            @views m[iz,ir,is] = dot(derivative_coefficients, m[2:ngrid,ir,is]) / (lower_boundary_value - Db)
+        end
+    end
+
+    if z.irank == z.nrank - 1 && !z.periodic
+        # Upper boundary
+        Dmat = z_spectral.lobatto.Dmat
+        derivative_coefficients = @view Dmat[end,1:end-1]
+        Db = Dmat[end,end]
+        ngrid = z.ngrid
+
+        # Set the last point in z so that dm/dz is zero at the boundary.
+        iz = z.n
+        @loop_s_r is ir begin
+            @views m[iz,ir,is] = dot(derivative_coefficients, m[end-ngrid+1:end-1,ir,is]) / (upper_boundary_value - Db)
+        end
+    end
+
+    return nothing
+end
+
+"""
+calculate divergence of parallel heat flux if ion composition flag is coll_krook fluid ions
+"""
+function calculate_ion_dqpar_dz_from_coll_krook!(dqpar_dz, density, upar, p, dp_dz, vth,
+                                                 dT_dz, z, r, vperp, z_spectral,
+                                                 collisions, evolve_density, evolve_upar,
+                                                 evolve_p, T_e, dummy_zrs, dummy_zrs_2,
+                                                 buffer_r_1, buffer_r_2, buffer_r_3,
+                                                 buffer_r_4)
+    # Note that this is a braginskii heat flux for ions using the krook operator. The full Fokker-Planck operator
+    # Braginskii heat flux is different! This also assumes one ion species, and so no friction between ions.
+    @debug_consistency_checks r.n == size(qpar, 2) || throw(BoundsError(qpar))
+    @debug_consistency_checks z.n == size(qpar, 1) || throw(BoundsError(qpar))
+
+    if vperp.n == 1
+        # For 1V need to use parallel temperature for Maxwellian in Krook
+        # operator, and for consistency with old 1D1V results also calculate
+        # collision frequency using parallel temperature.
+        Krook_vth_prefactor = sqrt(3.0)
+        adjust_1V = 1.0 / sqrt(3.0)
+    else
+        Krook_vth_prefactor = vth
+        adjust_1V = 1.0
+    end
+
+    # calculate coll_krook heat flux. Currently only works for one ion species! (hence the 1 in dT_dz[iz,ir,1])
+    if evolve_density && evolve_upar && evolve_p
+        @begin_s_r_z_region()
+        T = dummy_zrs
+        @loop_s_r_z is ir iz begin
+            # store the temperature in dummy_zrs
+            T[iz,ir,is] = p[iz,ir,is]/density[iz,ir,is]
+        end
+
+        @begin_s_r_region()
+        # add boundary condition to the heat flux by setting temperature gradient to zero
+        # so that the conductive heat flux is zero at the z boundaries, since now there is
+        # no distribution function (in this case shape function) whose cutoff boundary
+        # condition can hold the parallel heat flux in check. See Stangeby textbook,
+        # equations (2.92) and (2.93), and the paragraph between.
+        apply_Neumann_z_bc_to_moment!(T, z, z_spectral)
+        if z.irank == 0 && !z.periodic
+            @loop_s_r is ir begin
+                # Make pressure and vth consistent with the updated temperature
+                p[1,ir,is] = T[1,ir,is] * density[1,ir,is]
+                vth[1,ir,is] = sqrt(2.0 * T[1,ir,is])
+            end
+        end
+        if z.irank == z.nrank - 1 && !z.periodic
+            @loop_s_r is ir begin
+                # Make pressure consistent with the updated temperature
+                p[end,ir,is] = T[end,ir,is] * density[end,ir,is]
+                vth[end,ir,is] = sqrt(2.0 * T[end,ir,is])
+            end
+        end
+        # Re-calculate dp_dz with modified boundary values (again this is slightly
+        # inefficient).
+        derivative_z!(dp_dz, p, buffer_r_1, buffer_r_2, buffer_r_3, buffer_r_4,
+                      z_spectral, z)
+
+        # calculate the z derivative of the ion temperature - this will be repeated later,
+        # but need it for dqpar_dz, and we do not optimize the collisional Krook option as
+        # much as possible.
+        derivative_z!(dT_dz, T, buffer_r_1, buffer_r_2, buffer_r_3, buffer_r_4,
+                      z_spectral, z)
+
+        d2T_dz2 = dummy_zrs_2
+        second_derivative_z!(d2T_dz2, T, buffer_r_1, buffer_r_2, buffer_r_3, buffer_r_4,
+                             z_spectral, z)
+
+        @begin_s_r_z_region()
+        @loop_s_r_z is ir iz begin
+            Krook_vth = Krook_vth_prefactor * vth[iz,ir,is]
+
+            # Note that (density * vth^2 / nu_ii) is proportional to density^0 * T^(5/2)
+            # [i.e. independent of density], so its gradient is proportional to dT/dz.
+            nu_ii = get_collision_frequency_ii(collisions, density[iz,ir,is], Krook_vth)
+            prefactor = density[iz,ir,is] * Krook_vth^2 / nu_ii
+            dprefactor_dz = prefactor * 5/2 * dT_dz[iz,ir,is] / T[iz,ir,is]
+
+            dqpar_dz[iz,ir,is] =
+                -(3/2) * 1/2 * 3 * (dprefactor_dz * dT_dz[iz,ir,is]
+                                    + prefactor * d2T_dz2[iz,ir,is])
+        end
+    else
+        throw(ArgumentError("coll_krook heat flux simulation requires evolve_density,
+              evolve_upar and evolve_p to be true, since it is a purely fluid simulation"))
+    end
+
+    return nothing
+end
+
 function get_qpar(ff, density, upar, p, vth, vpa, vperp, evolve_density, evolve_upar,
                   evolve_p)
     if evolve_p
@@ -1387,8 +1527,10 @@ end
 Pre-calculate spatial derivatives of the moments that will be needed for the time advance
 """
 @timeit_debug global_timer calculate_ion_moment_derivatives!(moments, fields, geometry,
-                                                             scratch, scratch_dummy, r,
-                                                             z, r_spectral, z_spectral,
+                                                             collisions, composition,
+                                                             scratch, scratch_dummy, r, z,
+                                                             vperp, r_spectral,
+                                                             z_spectral,
                                                              ion_mom_diss_coeff) = begin
     if !(moments.evolve_density || moments.evolve_upar || moments.evolve_p)
         # Nothing to do in this function.
@@ -1405,6 +1547,7 @@ Pre-calculate spatial derivatives of the moments that will be needed for the tim
     vth = moments.ion.vth
     bz = geometry.bzed
     dummy_zrs = scratch_dummy.dummy_zrs
+    dummy_zrs_2 = scratch_dummy.buffer_zrs_2
     buffer_r_1 = scratch_dummy.buffer_rs_1
     buffer_r_2 = scratch_dummy.buffer_rs_2
     buffer_r_3 = scratch_dummy.buffer_rs_3
@@ -1452,8 +1595,20 @@ Pre-calculate spatial derivatives of the moments that will be needed for the tim
                                         buffer_r_2, buffer_r_3, buffer_r_4, z_spectral, z)
         end
 
-        @views derivative_z!(moments.ion.dqpar_dz, qpar, buffer_r_1,
-                             buffer_r_2, buffer_r_3, buffer_r_4, z_spectral, z)
+        if composition.ion_physics == coll_krook_ions
+            calculate_ion_dqpar_dz_from_coll_krook!(moments.ion.dqpar_dz, density, upar,
+                                                    p, moments.ion.dp_dz, vth,
+                                                    moments.ion.dT_dz, z, r, vperp,
+                                                    z_spectral, collisions,
+                                                    moments.evolve_density,
+                                                    moments.evolve_upar, moments.evolve_p,
+                                                    composition.T_e, dummy_zrs,
+                                                    dummy_zrs_2, buffer_r_1, buffer_r_2,
+                                                    buffer_r_3, buffer_r_4)
+        else
+            @views derivative_z!(moments.ion.dqpar_dz, qpar, buffer_r_1,
+                                 buffer_r_2, buffer_r_3, buffer_r_4, z_spectral, z)
+        end
         @views derivative_z!(moments.ion.dvth_dz, vth, buffer_r_1,
                              buffer_r_2, buffer_r_3, buffer_r_4, z_spectral, z)
 
