@@ -2680,6 +2680,48 @@ function enforce_z_boundary_condition_moments!(density, moments, bc::String)
     #end
 end
 
+function apply_Neumann_z_bc_to_moment!(m::AbstractArray{mk_float,3}, z::coordinate,
+                                       z_spectral, lower_boundary_value=0.0,
+                                       upper_boundary_value=0.0)
+    if !isa(z_spectral, gausslegendre_info)
+        error("Neumann z boundary condition is only implemented for Gauss-Legendre discretization")
+    end
+
+    # See comments in `create_r_section()` for Neumann bc for notes on implementation.
+
+    @begin_s_r_region()
+
+    if z.irank == 0 && !z.periodic
+        # Lower boundary
+        Dmat = z_spectral.lobatto.Dmat
+        Dmat_row = @view Dmat[1,2:end]
+        Db = Dmat[1,1]
+        ngrid = z.ngrid
+
+        # Set the first point in z so that dm/dz is zero at the boundary.
+        iz = 1
+        @loop_s_r is ir begin
+            @views m[iz,ir,is] = dot(derivative_coefficients, m[2:ngrid,ir,is]) / (lower_boundary_value - Db)
+        end
+    end
+
+    if z.irank == z.nrank - 1 && !z.periodic
+        # Upper boundary
+        Dmat = z_spectral.lobatto.Dmat
+        Dmat_row = @view Dmat[end,1:end-1]
+        Db = Dmat[end,end]
+        ngrid = z.ngrid
+
+        # Set the last point in z so that dm/dz is zero at the boundary.
+        iz = z.n
+        @loop_s_r is ir begin
+            @views m[iz,ir,is] = dot(derivative_coefficients, m[end-ngrid+1:end-1,ir,is]) / (upper_boundary_value - Db)
+        end
+    end
+
+    return nothing
+end
+
 """
 """
 function enforce_v_boundary_condition_local!(f, bc, speed, v_diffusion, v, v_spectral)
