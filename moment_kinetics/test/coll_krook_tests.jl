@@ -311,6 +311,7 @@ function run_test_with_restart(dkions_test_input, coll_krook_test_input, expecte
             println("data tested would be: ", actual_phi)
             @test false
         else
+println("error is: ", extrema(actual_phi .- expected_phi))
             @test isapprox(actual_phi, expected_phi, rtol=rtol, atol=atol)
         end
     end
