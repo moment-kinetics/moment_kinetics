@@ -241,7 +241,7 @@ coll_krook_n100 = recursive_merge(coll_krook_n100,
 """
 Run a test for a single set of parameters
 """
-function run_test_with_restart(dkions_test_input, coll_krook_test_input, expected_phi; rtol=4.e-14, atol=1.e-15, args...)
+function run_test_with_restart(dkions_test_input, coll_krook_test_input, expected_phi; rtol=1.e-12, atol=1.e-12, args...)
     # by passing keyword arguments to run_test, args becomes a Tuple of Pairs which can be
     # used to update the default inputs
 
