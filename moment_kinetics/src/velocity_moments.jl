@@ -637,7 +637,8 @@ function update_moments!(moments, ff_in, gyroavs::gyro_operators, vpa, vperp, z,
         end
     end
 
-    update_vth!(moments.ion.vth, moments.ion.p, moments.ion.dens, z, r, composition)
+    update_vth!(moments.ion.vth, moments.ion.temp, moments.ion.p, moments.ion.dens, z, r,
+                composition)
     # update the Chodura diagnostic -- note that the pdf should be the unnormalised one
     # so this will break for the split moments cases
     if composition.ion_physics != coll_krook_ions
@@ -987,14 +988,15 @@ function get_pperp(p, ppar)
     return 1.5 * p - 0.5 * ppar
 end
 
-function update_vth!(vth, p, dens, z, r, composition)
+function update_vth!(vth, temp, p, dens, z, r, composition)
     @debug_consistency_checks composition.n_ion_species == size(vth,3) || throw(BoundsError(vth))
     @debug_consistency_checks r.n == size(vth,2) || throw(BoundsError(vth))
     @debug_consistency_checks z.n == size(vth,1) || throw(BoundsError(vth))
 
     @begin_s_r_z_region()
     @loop_s_r_z is ir iz begin
-        vth[iz,ir,is] = sqrt(2.0 * p[iz,ir,is] / dens[iz,ir,is])
+        temp[iz,ir,is] = p[iz,ir,is] / dens[iz,ir,is]
+        vth[iz,ir,is] = sqrt(2.0 * temp[iz,ir,is])
     end
 end
 
@@ -1187,7 +1189,7 @@ end
 calculate divergence of parallel heat flux if ion composition flag is coll_krook fluid ions
 """
 function calculate_ion_dqpar_dz_from_coll_krook!(dqpar_dz, density, upar, p, dp_dz, vth,
-                                                 dT_dz, z, r, vperp, z_spectral,
+                                                 T, dT_dz, z, r, vperp, z_spectral,
                                                  collisions, evolve_density, evolve_upar,
                                                  evolve_p, T_e, dummy_zrs, dummy_zrs_2,
                                                  buffer_r_1, buffer_r_2, buffer_r_3,
@@ -1210,13 +1212,6 @@ function calculate_ion_dqpar_dz_from_coll_krook!(dqpar_dz, density, upar, p, dp_
 
     # calculate coll_krook heat flux. Currently only works for one ion species! (hence the 1 in dT_dz[iz,ir,1])
     if evolve_density && evolve_upar && evolve_p
-        @begin_s_r_z_region()
-        T = dummy_zrs
-        @loop_s_r_z is ir iz begin
-            # store the temperature in dummy_zrs
-            T[iz,ir,is] = p[iz,ir,is]/density[iz,ir,is]
-        end
-
         @begin_s_r_region()
         # add boundary condition to the heat flux by setting temperature gradient to zero
         # so that the conductive heat flux is zero at the z boundaries, since now there is
@@ -1598,8 +1593,8 @@ Pre-calculate spatial derivatives of the moments that will be needed for the tim
         if composition.ion_physics == coll_krook_ions
             calculate_ion_dqpar_dz_from_coll_krook!(moments.ion.dqpar_dz, density, upar,
                                                     p, moments.ion.dp_dz, vth,
-                                                    moments.ion.dT_dz, z, r, vperp,
-                                                    z_spectral, collisions,
+                                                    moments.ion.temp, moments.ion.dT_dz,
+                                                    z, r, vperp, z_spectral, collisions,
                                                     moments.evolve_density,
                                                     moments.evolve_upar, moments.evolve_p,
                                                     composition.T_e, dummy_zrs,
@@ -1613,12 +1608,8 @@ Pre-calculate spatial derivatives of the moments that will be needed for the tim
                              buffer_r_2, buffer_r_3, buffer_r_4, z_spectral, z)
 
         # calculate the z derivative of the ion temperature
-        @loop_s_r_z is ir iz begin
-            # store the temperature in dummy_zrs
-            dummy_zrs[iz,ir,is] = p[iz,ir,is]/density[iz,ir,is]
-        end
-        @views derivative_z!(moments.ion.dT_dz, dummy_zrs, buffer_r_1,
-                            buffer_r_2, buffer_r_3, buffer_r_4, z_spectral, z)
+        @views derivative_z!(moments.ion.dT_dz, moments.ion.temp, buffer_r_1, buffer_r_2,
+                             buffer_r_3, buffer_r_4, z_spectral, z)
     end
 
     # z-upwinded derivatives
@@ -2640,8 +2631,8 @@ update velocity moments that are calculable from the evolved ion pdf
     end
     # update the thermal speed
     @begin_s_r_z_region()
-    update_vth!(moments.ion.vth, new_scratch.p, new_scratch.density, z, r,
-                composition)
+    update_vth!(moments.ion.vth, moments.ion.temp, new_scratch.p, new_scratch.density, z,
+                r, composition)
     # update the parallel heat flux
     update_ion_qpar!(moments.ion.qpar, moments.ion.qpar_updated, new_scratch.density,
                      new_scratch.upar, moments.ion.vth, moments.ion.dT_dz, ff, vpa, vperp,

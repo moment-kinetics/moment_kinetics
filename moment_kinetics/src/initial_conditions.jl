@@ -152,7 +152,8 @@ function init_pdf_and_moments!(pdf, moments, fields, geometry, composition, r, z
             init_upar!(moments.ion.upar, z, r, species.ion, n_ion_species)
             # initialise the ion parallel thermal speed profile
             init_vth!(moments.ion.vth, z, r, species.ion, n_ion_species)
-            @. moments.ion.p = 0.5 * moments.ion.dens * moments.ion.vth^2
+            @. moments.ion.temp = 0.5 * moments.ion.vth^2
+            @. moments.ion.p = moments.ion.dens * moments.ion.temp
             # initialise pressures assuming isotropic distribution
             @. moments.ion.p = 0.5 * moments.ion.dens * moments.ion.vth^2
             if vperp.n == 1

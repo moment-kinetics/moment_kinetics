@@ -1613,7 +1613,6 @@ source amplitude.
         end
     elseif ion_source_settings.source_type == "temperature_midpoint_control"
         @begin_serial_region()
-        ion_moments.temp .= p ./ density
         # controller_amplitude error is a shared memory Vector of length 1
         controller_amplitude = ion_source_settings.PI_controller_amplitude
         @serial_region begin

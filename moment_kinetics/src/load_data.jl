@@ -779,6 +779,7 @@ function reload_evolving_fields!(pdf, moments, fields, restart_prefix_iblock, ti
             moments.ion.vth .= reload_moment("thermal_speed", dynamic, time_index, coords,
                                              reload_ranges, restart_coords,
                                              interpolation_needed)
+            @. moments.ion.temp = 0.5 * moments.ion.vth^2
             moments.ion.dSdt .= reload_moment("entropy_production", dynamic, time_index,
                                               coords, reload_ranges, restart_coords,
                                               interpolation_needed)
