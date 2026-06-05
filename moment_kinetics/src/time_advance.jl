@@ -1180,9 +1180,9 @@ function _setup_time_advance_internal!(pdf, fields, vz, vr, vzeta, vpa, vperp, z
     # 'speed' in advect objects, which are needed for boundary conditions on the
     # distribution function which is then used to (possibly) re-calculate the moments
     # after which the initial values of moment derivatives are re-calculated.
-    calculate_ion_moment_derivatives!(moments, fields, geometry, scratch[1],
-                                      scratch_dummy, r, z, r_spectral, z_spectral,
-                                      ion_mom_diss_coeff)
+    calculate_ion_moment_derivatives!(moments, fields, geometry, collisions, composition,
+                                      scratch[1], scratch_dummy, r, z, vperp, r_spectral,
+                                      z_spectral, ion_mom_diss_coeff)
     calculate_neutral_moment_derivatives!(moments, scratch[1], scratch_dummy, z, z_spectral, 
                                           neutral_mom_diss_coeff)
 
@@ -1405,9 +1405,9 @@ function _setup_time_advance_internal!(pdf, fields, vz, vr, vzeta, vpa, vperp, z
         composition.me_over_mi, collisions.electron_fluid.nu_ei,
         composition.electron_physics)
 
-    calculate_ion_moment_derivatives!(moments, fields, geometry, scratch[1],
-                                      scratch_dummy, r, z, r_spectral, z_spectral,
-                                      ion_mom_diss_coeff)
+    calculate_ion_moment_derivatives!(moments, fields, geometry, collisions, composition,
+                                      scratch[1], scratch_dummy, r, z, vperp, r_spectral,
+                                      z_spectral, ion_mom_diss_coeff)
     calculate_electron_moment_derivatives!(moments, scratch[1], scratch_dummy, z, z_spectral, 
                                       electron_mom_diss_coeff, composition.electron_physics)
     calculate_neutral_moment_derivatives!(moments, scratch[1], scratch_dummy, z, z_spectral, 
@@ -2898,9 +2898,10 @@ moments and moment derivatives
                                 r_spectral, geometry, gyroavs, scratch_dummy,
                                 z_advect, collisions, false)
 
-        calculate_ion_moment_derivatives!(moments, fields, geometry, this_scratch,
-                                        scratch_dummy, r, z, r_spectral, z_spectral,
-                                        num_diss_params.ion.moment_dissipation_coefficient)
+        calculate_ion_moment_derivatives!(moments, fields, geometry, collisions,
+                                          composition, this_scratch, scratch_dummy, r, z,
+                                          vperp, r_spectral, z_spectral,
+                                          num_diss_params.ion.moment_dissipation_coefficient)
         calculate_electron_moments!(this_scratch, pdf, moments, composition,
                                     collisions, r, z, vperp, vpa)
         calculate_electron_moment_derivatives!(moments, this_scratch, scratch_dummy,
@@ -2918,9 +2919,10 @@ moments and moment derivatives
                     moments, geometry, z_spectral, r_spectral, scratch_dummy, gyroavs,
                     boundaries)
     else
-        calculate_ion_moment_derivatives!(moments, fields, geometry, this_scratch,
-                                        scratch_dummy, r, z, r_spectral, z_spectral,
-                                        num_diss_params.ion.moment_dissipation_coefficient)
+        calculate_ion_moment_derivatives!(moments, fields, geometry, collisions,
+                                          composition, this_scratch, scratch_dummy, r, z,
+                                          vperp, r_spectral, z_spectral,
+                                          num_diss_params.ion.moment_dissipation_coefficient)
     end
 
     if composition.electron_physics ∈ (kinetic_electrons,
@@ -4576,8 +4578,9 @@ Do a backward-Euler timestep for all terms in the ion kinetic equation.
         update_derived_moments!(new_scratch, moments, vpa, vperp, z, r, composition,
                                 r_spectral, geometry, gyroavs, scratch_dummy, z_advect,
                                 collisions, false)
-        calculate_ion_moment_derivatives!(moments, fields, geometry, new_scratch,
-                                          scratch_dummy, r, z, r_spectral, z_spectral,
+        calculate_ion_moment_derivatives!(moments, fields, geometry, collisions,
+                                          composition, new_scratch, scratch_dummy, r, z,
+                                          vperp, r_spectral, z_spectral,
                                           num_diss_params.ion.moment_dissipation_coefficient)
 
         euler_time_advance!(residual_scratch, new_scratch, pdf, fields, moments,

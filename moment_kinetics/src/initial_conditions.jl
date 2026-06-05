@@ -152,7 +152,8 @@ function init_pdf_and_moments!(pdf, moments, fields, geometry, composition, r, z
             init_upar!(moments.ion.upar, z, r, species.ion, n_ion_species)
             # initialise the ion parallel thermal speed profile
             init_vth!(moments.ion.vth, z, r, species.ion, n_ion_species)
-            @. moments.ion.p = 0.5 * moments.ion.dens * moments.ion.vth^2
+            @. moments.ion.temp = 0.5 * moments.ion.vth^2
+            @. moments.ion.p = moments.ion.dens * moments.ion.temp
             # initialise pressures assuming isotropic distribution
             @. moments.ion.p = 0.5 * moments.ion.dens * moments.ion.vth^2
             if vperp.n == 1
@@ -2003,7 +2004,8 @@ function init_pdf_moments_manufactured_solns!(pdf, moments, vz, vr, vzeta, vpa, 
                  moments.ion.vth, moments.ion.dT_dz, pdf.ion.norm, vpa, vperp, z, r,
                  composition, drift_kinetic_ions, collisions, moments.evolve_density, moments.evolve_upar,
                  moments.evolve_p)
-    update_vth!(moments.ion.vth, moments.ion.p, moments.ion.dens, z, r, composition)
+    update_vth!(moments.ion.vth, moments.ion.temp, moments.ion.p, moments.ion.dens, z, r,
+                composition)
 
     @begin_serial_region()
     @serial_region begin
