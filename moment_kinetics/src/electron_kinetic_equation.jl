@@ -1100,7 +1100,8 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
                                      moments_global_indices;
                                      distributed_comm=coords.z.comm,
                                      shared_comm=comm_anyzv_subblock[],
-                                     allocate_array=precon_allocate_shared_float,
+                                     allocate_shared_float=precon_allocate_shared_float,
+                                     allocate_shared_int=precon_allocate_shared_int,
                                      synchronize_shared=precon_synchronize,
                                      skip_factorization=true,
                                      timer=(timeit_debug_enabled() ? global_timer : nothing))
