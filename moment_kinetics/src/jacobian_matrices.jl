@@ -79,7 +79,7 @@ function get_MPIStaticCondensations_Dimensions_from_coordinates(coordinates)
     return [create_dimension(; nelement=c.nelement_global, ngrid=c.ngrid, nrank=c.nrank,
                              irank=c.irank, periodic=c.periodic,
                              dense_boundaries=(c.bc=="wall"))
-            for c ∈ coordinates]
+            for c ∈ coordinates if c.n > 1]
 end
 
 """
