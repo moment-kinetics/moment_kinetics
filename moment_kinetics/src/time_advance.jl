@@ -642,6 +642,9 @@ function get_nl_solver_params(t_params, input_dict, composition, r, z, vperp, vp
         preconditioner_update_interval=300,
         total_its_soft_limit=50,
         adi_precon_iterations=1,
+        MPIStaticCondensation_level_multiplier=2,
+        MPIStaticCondensation_sparse_C_blocks=false,
+        MPIStaticCondensation_schur_tile_size=-1,
        )
 
     nl_solver_input = Dict_to_NamedTuple(nl_solver_section)

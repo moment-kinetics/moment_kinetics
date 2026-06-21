@@ -4,7 +4,7 @@ using ConcreteStructs
 using LinearAlgebra
 using MPI
 using MPISchurComplements
-using MPISchurComplements.FakeMPILUs # This is not performant, use temporarily for prototyping.
+using MPIStaticCondensations
 using OrderedCollections
 using SparseArrays
 
@@ -26,7 +26,7 @@ using ..input_structs
 using ..interpolation: interpolate_to_grid_1d!, fill_1d_interpolation_matrix!,
                        interpolate_symmetric!, fill_interpolate_symmetric_matrix!
 using ..type_definitions
-using ..array_allocation: allocate_float, allocate_shared_float
+using ..array_allocation: allocate_float, allocate_shared_float, allocate_shared_int
 using ..electron_fluid_equations: calculate_electron_moments!,
                                   calculate_electron_moments_no_r!,
                                   update_electron_vth_temperature!,
@@ -48,6 +48,7 @@ using ..file_io: get_electron_io_info, write_electron_state, finish_electron_io,
 using ..collision_frequencies: get_collision_frequency_ee,
                                get_collision_frequency_ei
 using ..jacobian_matrices
+using ..jacobian_matrices: get_MPIStaticCondensations_Dimensions_from_coordinates
 using ..krook_collisions: electron_krook_collisions!, get_electron_krook_collisions_term
 using ..timer_utils
 using ..moment_constraints: hard_force_moment_constraints!,
@@ -1046,13 +1047,26 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
                 moments_global_indices = moments_global_indices.data
             end
 
-            Alu = FakeMPILU(A, pdf_global_indices, pdf_global_indices; comm=coords.z.comm,
-                            shared_comm=comm_anyzv_subblock[], use_sparse=true, skip_factorization=true)
-
-            function schur_complement_allocate(dim_sizes...)
+            dfn_coords = [coords.vpa, coords.vperp, coords.z]
+            mpisc_dims =
+                get_MPIStaticCondensations_Dimensions_from_coordinates(dfn_coords)
+            function precon_allocate_shared_float(dim_sizes...; comm=nothing)
+                if comm === nothing
+                    this_comm = comm_anyzv_subblock[]
+                else
+                    this_comm = comm
+                end
                 return allocate_shared_float(ntuple(i->(Symbol("schur_complement$i")=>dim_sizes[i]),
-                                                    length(dim_sizes))...;
-                                             comm=comm_anyzv_subblock[])
+                                                    length(dim_sizes))...; comm=comm)
+            end
+            function precon_allocate_shared_int(dim_sizes...; comm=nothing)
+                if comm === nothing
+                    this_comm = comm_anyzv_subblock[]
+                else
+                    this_comm = comm
+                end
+                return allocate_shared_int(ntuple(i->(Symbol("schur_complement$i")=>dim_sizes[i]),
+                                                  length(dim_sizes))...; comm=comm)
             end
             # External package MPISchurComplements cannot use our macro
             # @_anyzv_subblock_synchronize() to retrieve line numbers, so (if using
@@ -1062,13 +1076,32 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
                                  hash(string(@__FILE__, @__LINE__)),
                                  nothing
                                 )
+            precon_synchronize = () -> _anyzv_subblock_synchronize(fake_call_site)
+            schur_tile_size = nl_solver_input.MPIStaticCondensation_schur_tile_size > 0 ? nl_solver_input.MPIStaticCondensation_schur_tile_size : nothing
+            if timeit_debug_enabled()
+                precon_timer = global_timer
+            else
+                precon_timer = nothing
+            end
+            precon_check_lu = @debug_consistency_checks_ifelse(true, false)
+            Alu = mpi_static_condensation(mpisc_dims;
+                                          level_multiplier=nl_solver_input.MPIStaticCondensation_level_multiplier,
+                                          sparse_C_blocks=nl_solver_input.MPIStaticCondensation_sparse_C_blocks,
+                                          comm=comm_world, distributed_comm=coords.z.comm,
+                                          shared_comm=comm_anyzv_subblock[],
+                                          allocate_shared_float=precon_allocate_shared_float,
+                                          allocate_shared_int=precon_allocate_shared_int,
+                                          synchronize_shared=precon_synchronize,
+                                          schur_tile_size=schur_tile_size,
+                                          timer=precon_timer, check_lu=precon_check_lu)
+
             schur_complement_factorization =
                 mpi_schur_complement(Alu, B, C, D, pdf_global_indices,
                                      moments_global_indices;
                                      distributed_comm=coords.z.comm,
                                      shared_comm=comm_anyzv_subblock[],
-                                     allocate_array=schur_complement_allocate,
-                                     synchronize_shared=()->_anyzv_subblock_synchronize(fake_call_site),
+                                     allocate_array=precon_allocate_shared_float,
+                                     synchronize_shared=precon_synchronize,
                                      skip_factorization=true,
                                      timer=(timeit_debug_enabled() ? global_timer : nothing))
 
