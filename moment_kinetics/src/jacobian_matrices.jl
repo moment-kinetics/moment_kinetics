@@ -20,6 +20,7 @@ using ..type_definitions
 using BlockArrays
 using BlockBandedMatrices
 using MPI
+using MPIStaticCondensations: create_dimension, get_shared_sparse_matrix_csc_buffer
 using SparseArrays
 
 # Stores some information from `coordinate` struct, but has no type parameters so can be
@@ -72,6 +73,13 @@ struct mini_discretization_info
         end
         return new(radau_Dmat, lobatto_Dmat, dense_second_deriv_matrix)
     end
+end
+
+function get_MPIStaticCondensations_Dimensions_from_coordinates(coordinates)
+    return [create_dimension(; nelement=c.nelement_global, ngrid=c.ngrid, nrank=c.nrank,
+                             irank=c.irank, periodic=c.periodic,
+                             dense_boundaries=(c.bc=="wall"))
+            for c ∈ coordinates]
 end
 
 """
@@ -157,7 +165,7 @@ end
     create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=comm_block[],
                          synchronize::Union{Function,Nothing}=_block_synchronize,
                          boundary_skip_funcs::BSF=nothing,
-                         handle_overlaps::Val=Val(true), block_banded=true,
+                         handle_overlaps::Val=Val(true), sparse_storage=true,
                          kwargs...) where {BSF}
 
 Create a [`jacobian_info`](@ref) struct.
@@ -183,14 +191,15 @@ if no function is needed for the variable).
 to be solved coupled across all distributed-MPI subdomains, or restricted to a single
 distributed-MPI subdomain (for a more approximate but more parallelisable preconditioner).
 
-`block_banded=false` can be passed to store the Jacobian matrix in a dense
-`MPISharedArray`, rather than the default block-banded matrix type (BlockSkylineMatrix,
-with data stored in a shared-memory array).
+`sparse_storage=false` can be passed to store the Jacobian matrix in a dense
+`MPISharedArray`, rather than the default sparse (FixedSparseCSC, with data stored in a
+shared-memory array) or block-banded matrix type (BlockSkylineMatrix, with data stored in
+a shared-memory array).
 """
 function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=comm_block[],
                               synchronize::Union{Function,Nothing}=_block_synchronize,
                               boundary_skip_funcs::BSF=nothing,
-                              handle_overlaps::Val=Val(true), block_banded=true,
+                              handle_overlaps::Val=Val(true), sparse_storage=true,
                               kwargs...) where {BSF}
 
     @debug_consistency_checks all(all(d ∈ keys(coords) for d ∈ v[2]) for v ∈ values(kwargs)) || error("Some coordinate required by the state variables were not included in `coords`.")
@@ -215,7 +224,7 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
         # block-structured matrix in the way that we do it below, and probably more
         # efficient anyway to stick with a simple dense matrix, since the block-structured
         # one would not have any zero blocks even if we were to handle this special case.
-        block_banded = false
+        sparse_storage = false
     end
     if (state_vector_coords[1][end].periodic && state_vector_coords[1][end].irank == 0
             && state_vector_coords[1][end].nrank == 1)
@@ -223,7 +232,7 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
         # the moment, so revert to dense matrices.
         println("WARNING: periodic bcs not compatible with block-banded matrix "
                 * "structure, using dense matrix storage for Jacobian matrix.")
-        block_banded = false
+        sparse_storage = false
     end
 
     # For each variable, get the corresponding 'region type' from
@@ -320,22 +329,36 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
     if comm === nothing
         # No shared memory needed
         function get_sub_matrix(i, j)
-            if block_banded
-                if state_vector_coords[i][end].name != state_vector_coords[j][end].name
-                    error("Cannot create block-banded matrix for Jacobian block for "
-                          * "block ($i,$j) when outer coordinates "
-                          * "($(state_vector_coords[i][end].name) and "
-                          * "$(state_vector_coords[j][end].name)) are not the same.")
+            if sparse_storage
+                if i == 1 && j == 1
+                    # Create FixedSparseCSC buffer for the main distribution-function
+                    # block of the Jacobian matrix.
+                    mpisc_dims =
+                        get_MPIStaticCondensations_Dimensions_from_coordinates(state_vector_coords[i])
+                    jac_comm = comm
+                    jac_allocate_shared_float = (args...; comm=nothing, kwargs...) -> allocate_shared_float(args...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
+                    jac_allocate_shared_int = (args...; comm=nothing, kwargs...) -> allocate_shared_int(args...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
+                    return get_shared_sparse_matrix_csc_buffer(mpisc_dims, comm,
+                                                               jac_allocate_shared_float,
+                                                               jac_allocate_shared_int;
+                                                               ind_type=mk_int)
+                else
+                    if state_vector_coords[i][end].name != state_vector_coords[j][end].name
+                        error("Cannot create block-banded matrix for Jacobian block for "
+                              * "block ($i,$j) when outer coordinates "
+                              * "($(state_vector_coords[i][end].name) and "
+                              * "$(state_vector_coords[j][end].name)) are not the same.")
+                    end
+                    outer_coord = state_vector_coords[i][end]
+                    row_block_sizes, column_block_sizes, off_diagonals =
+                        get_block_sizes(outer_coord.nelement_local, outer_coord.ngrid,
+                                        state_vector_dim_steps[i][end],
+                                        state_vector_dim_steps[j][end])
+                    return BlockSkylineMatrix{mk_float}(BlockBandedMatrices.Zeros(sum(row_block_sizes),
+                                                                                  sum(column_block_sizes)),
+                                                        row_block_sizes, column_block_sizes,
+                                                        (off_diagonals,off_diagonals))
                 end
-                outer_coord = state_vector_coords[i][end]
-                row_block_sizes, column_block_sizes, off_diagonals =
-                    get_block_sizes(outer_coord.nelement_local, outer_coord.ngrid,
-                                    state_vector_dim_steps[i][end],
-                                    state_vector_dim_steps[j][end])
-                return BlockSkylineMatrix{mk_float}(BlockBandedMatrices.Zeros(sum(row_block_sizes),
-                                                                              sum(column_block_sizes)),
-                                                    row_block_sizes, column_block_sizes,
-                                                    (off_diagonals,off_diagonals))
             else
                 # Use dense matrices.
                 return allocate_float(Symbol(:jacobian_size, i)=>state_vector_sizes[i],
@@ -346,7 +369,7 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
                                 for i ∈ 1:n_entries)
     else
         function get_shared_sub_matrix(i, j)
-            if block_banded
+            if sparse_storage
                 if state_vector_coords[i][end].name != state_vector_coords[j][end].name
                     error("Cannot create block-banded matrix for Jacobian block for "
                           * "block ($i,$j) when outer coordinates "
@@ -378,7 +401,7 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
                                 for i ∈ 1:n_entries)
     end
 
-    if block_banded
+    if sparse_storage
         function get_row_local_ranges(row)
             return Tuple(get_local_flattened_range(length(block.data)) for block ∈ row)
         end
