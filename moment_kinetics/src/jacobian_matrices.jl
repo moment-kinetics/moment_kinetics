@@ -228,8 +228,7 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
         # one would not have any zero blocks even if we were to handle this special case.
         sparse_storage = false
     end
-    if (blockskyline_topleft && state_vector_coords[1][end].periodic
-            && state_vector_coords[1][end].irank == 0
+    if (state_vector_coords[1][end].periodic && state_vector_coords[1][end].irank == 0
             && state_vector_coords[1][end].nrank == 1)
         # Periodic, but this cannot be handled by the structure of BlockSkylineMatrix at
         # the moment, so revert to dense matrices.
