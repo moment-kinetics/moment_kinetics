@@ -187,7 +187,7 @@ function check_Chodura_condition(r, z, vperp, vpa, dens, upar, vth, temp_e, comp
 
         v_parallel = vpagrid_to_vpa(vpa.grid, vth[1,ir,is,it], upar[1,ir,is,it], evolve_p,
                                     evolve_upar)
-        vpabar = @. v_parallel - 0.5 * geometry.rhostar * Er[1,ir,it] / geometry.bzed[1,ir]
+        vpabar = @. v_parallel - geometry.rhostar * Er[1,ir,it] / geometry.bzed[1,ir]
 
         # Get rid of a zero if it is there to avoid a blow up - f should be zero at that
         # point anyway
@@ -197,15 +197,30 @@ function check_Chodura_condition(r, z, vperp, vpa, dens, upar, vth, temp_e, comp
             end
         end
 
-        @views lower_result[ir,it] =
-            integral(f_lower[:,:,ir,is,it], vpabar, -2, vpa.wgts, vperp.grid, 0,
-                     vperp.wgts)
-        if it == ntime
-            println("check vpabar lower", vpabar)
-            println("result lower ", lower_result[ir,it])
+        if evolve_p
+            vpa_weights_lower = @. vth[1,ir,is,it] * vpa.wgts
+            vpa_weights_upper = @. vth[end,ir,is,it] * vpa.wgts
+        else
+            vpa_weights_lower = vpa.wgts
+            vpa_weights_upper = vpa.wgts
+        end
+        if evolve_p && vperp.n > 1
+            vperp_weights_lower = @. vth[1,ir,is,it]^2 * vperp.wgts
+            vperp_weights_upper = @. vth[end,ir,is,it]^2 * vperp.wgts
+        else
+            vperp_weights_lower = vperp.wgts
+            vperp_weights_upper = vperp.wgts
         end
 
-        lower_result[ir,it] *= 0.5 * temp_e[1,ir,it] / dens[1,ir,is,it]
+        @views lower_result[ir,it] =
+            integral(f_lower[:,:,ir,is,it], vpabar, -2, vpa_weights_lower, vperp.grid, 0,
+                     vperp_weights_lower)
+        #if it == ntime
+        #    println("check vpabar lower", vpabar)
+        #    println("result lower ", lower_result[ir,it])
+        #end
+
+        lower_result[ir,it] *= temp_e[1,ir,it] / dens[1,ir,is,it]
 
         if find_extra_offset
             if lower_result[ir,it] ≤ 1.0
@@ -213,11 +228,11 @@ function check_Chodura_condition(r, z, vperp, vpa, dens, upar, vth, temp_e, comp
             else
                 integrand = f_lower[:,:,ir,is,it]
                 for ivperp ∈ 1:nvperp
-                    @. integrand[:,ivperp] *= vpabar^(-2) * vpa.wgts * vperp.wgts[ivperp]
+                    @. integrand[:,ivperp] *= vpabar^(-2) * vpa_weights_lower * vperp_weights_lower[ivperp]
                 end
                 vperp_integral = @view sum(integrand; dims=2)[:,1]
                 cumulative_vpa_integral = cumsum(vperp_integral)
-                cutoff_index = searchsortedfirst(cumulative_vpa_integral, 2.0 * dens[1,ir,is,it] / temp_e[1,ir,it]) - 1
+                cutoff_index = searchsortedfirst(cumulative_vpa_integral, dens[1,ir,is,it] / temp_e[1,ir,it]) - 1
                 cutoff_lower[ir,it] = mean(vpabar[cutoff_index:cutoff_index+1])
                 vpa_before_zero_index = searchsortedfirst(vpabar, -zero) - 1
                 extra_offset_lower[ir,it] = vpa_before_zero_index - cutoff_index
@@ -229,7 +244,7 @@ function check_Chodura_condition(r, z, vperp, vpa, dens, upar, vth, temp_e, comp
 
         v_parallel = vpagrid_to_vpa(vpa.grid, vth[end,ir,is,it], upar[end,ir,is,it],
                                     evolve_p, evolve_upar)
-        vpabar = @. v_parallel - 0.5 * geometry.rhostar * Er[end,ir,it] / geometry.bzed[end,ir]
+        vpabar = @. v_parallel - geometry.rhostar * Er[end,ir,it] / geometry.bzed[end,ir]
 
         # Get rid of a zero if it is there to avoid a blow up - f should be zero at that
         # point anyway
@@ -240,14 +255,14 @@ function check_Chodura_condition(r, z, vperp, vpa, dens, upar, vth, temp_e, comp
         end
 
         @views upper_result[ir,it] =
-            integral(f_upper[:,:,ir,is,it], vpabar, -2, vpa.wgts, vperp.grid, 0,
-                     vperp.wgts)
-        if it == ntime
-            println("check vpabar upper ", vpabar)
-            println("result upper ", upper_result[ir,it])
-        end
+            integral(f_upper[:,:,ir,is,it], vpabar, -2, vpa_weights_upper, vperp.grid, 0,
+                     vperp_weights_upper)
+        #if it == ntime
+        #    println("check vpabar upper ", vpabar)
+        #    println("result upper ", upper_result[ir,it])
+        #end
 
-        upper_result[ir,it] *= 0.5 * temp_e[end,ir,it] / dens[end,ir,is,it]
+        upper_result[ir,it] *= temp_e[end,ir,it] / dens[end,ir,is,it]
 
         if find_extra_offset
             if upper_result[ir,it] ≤ 1.0
@@ -255,11 +270,11 @@ function check_Chodura_condition(r, z, vperp, vpa, dens, upar, vth, temp_e, comp
             else
                 integrand = f_upper[:,:,ir,is,it]
                 for ivperp ∈ 1:nvperp
-                    @. integrand[:,ivperp] *= vpabar^(-2) * vpa.wgts * vperp.wgts[ivperp]
+                    @. integrand[:,ivperp] *= vpabar^(-2) * vpa_weights_upper * vperp_weights_upper[ivperp]
                 end
                 vperp_integral = @view sum(integrand; dims=2)[:,1]
                 cumulative_vpa_integral = reverse(cumsum(reverse(vperp_integral)))
-                cutoff_index = searchsortedfirst(cumulative_vpa_integral, 2.0 * dens[end,ir,is,it] / temp_e[end,ir,it]; rev=true)
+                cutoff_index = searchsortedfirst(cumulative_vpa_integral, dens[end,ir,is,it] / temp_e[end,ir,it]; rev=true)
                 cutoff_upper[ir,it] = mean(vpabar[cutoff_index-1:cutoff_index])
                 vpa_after_zero_index = searchsortedlast(vpabar, zero) + 1
                 extra_offset_upper[ir,it] = cutoff_index - vpa_after_zero_index
@@ -368,7 +383,7 @@ end
 
 """
 """
-function analyze_pdf_data(ff, n_species, ntime, z, vpa, vth, evolve_ppar)
+function analyze_pdf_data(ff, n_species, ntime, z, vpa, vth, evolve_p)
     print("Analyzing distribution function data...")
     f_fldline_avg = allocate_float(vpa.n,n_species,ntime)
     for i ∈ 1:ntime
@@ -395,7 +410,7 @@ function analyze_pdf_data(ff, n_species, ntime, z, vpa, vth, evolve_ppar)
             end
         end
     end
-    if evolve_ppar
+    if evolve_p
         @. dens_moment *= vth
         @. upar_moment *= vth^2
         @. ppar_moment *= vth^3
@@ -1078,15 +1093,15 @@ coordinate at a point in space.
 Inputs should depend only on vpa.
 """
 function get_unnormalised_f_dzdt_1d(f, vpa_grid, density, upar, vth, evolve_density,
-                                    evolve_upar, evolve_ppar)
+                                    evolve_upar, evolve_p)
 
-    dzdt = vpagrid_to_vpa(vpa_grid, vth, upar, evolve_ppar, evolve_upar)
+    dzdt = vpagrid_to_vpa(vpa_grid, vth, upar, evolve_p, evolve_upar)
 
-    f_unnorm = get_unnormalised_f_1d(f, density, vth, evolve_density, evolve_ppar)
+    f_unnorm = get_unnormalised_f_1d(f, density, vth, evolve_density, evolve_p)
 
     return f_unnorm, dzdt
 end
-function get_unnormalised_f_1d(f, density, vth, evolve_density, evolve_ppar)
+function get_unnormalised_f_1d(f, density, vth, evolve_density, evolve_p)
     n_v_dims = ndims(f) - ndims(density)
     function add_v_dims(x)
         if ndims(x) == 0
@@ -1097,8 +1112,13 @@ function get_unnormalised_f_1d(f, density, vth, evolve_density, evolve_ppar)
             return result
         end
     end
-    if evolve_ppar
-        f_unnorm = f .* add_v_dims(density) ./ add_v_dims(vth)
+    if evolve_p
+        if size(f, 2) == 1
+            # 1V case
+            f_unnorm = f .* add_v_dims(density) ./ add_v_dims(vth)
+        else
+            f_unnorm = f .* add_v_dims(density) ./ add_v_dims(vth).^3
+        end
     elseif evolve_density
         f_unnorm = f .* add_v_dims(density)
     else
@@ -1113,34 +1133,34 @@ Get the unnormalised distribution function and unnormalised ('lab space') coordi
 Inputs should depend only on z and vpa.
 """
 function get_unnormalised_f_coords_2d(f, z_grid, vpa_grid, density, upar, vth,
-                                      evolve_density, evolve_upar, evolve_ppar)
+                                      evolve_density, evolve_upar, evolve_p)
 
     nvpa, nz = size(f)
     z2d = zeros(nvpa, nz)
     for iz ∈ 1:nz
         z2d[:,iz] .= z_grid[iz]
     end
-    v_parallel_2d = vpagrid_to_v_parallel_2d(vpa_grid, vth, upar, evolve_ppar, evolve_upar)
-    f_unnorm = get_unnormalised_f_2d(f, density, vth, evolve_density, evolve_ppar)
+    v_parallel_2d = vpagrid_to_v_parallel_2d(vpa_grid, vth, upar, evolve_p, evolve_upar)
+    f_unnorm = get_unnormalised_f_2d(f, density, vth, evolve_density, evolve_p)
 
     return f_unnorm, z2d, v_parallel_2d
 end
-function vpagrid_to_v_parallel_2d(vpa_grid, vth, upar, evolve_ppar, evolve_upar)
+function vpagrid_to_v_parallel_2d(vpa_grid, vth, upar, evolve_p, evolve_upar)
     nvpa = length(vpa_grid)
     nz = length(vth)
     v_parallel_2d = zeros(nvpa, nz)
     for iz ∈ 1:nz
         @views v_parallel_2d[:,iz] .= vpagrid_to_vpa(vpa_grid, vth[iz], upar[iz],
-                                                     evolve_ppar, evolve_upar)
+                                                     evolve_p, evolve_upar)
     end
     return v_parallel_2d
 end
-function get_unnormalised_f_2d(f, density, vth, evolve_density, evolve_ppar)
+function get_unnormalised_f_2d(f, density, vth, evolve_density, evolve_p)
     f_unnorm = similar(f)
     nz = size(f, 2)
     for iz ∈ 1:nz
         @views f_unnorm[:,iz] .= get_unnormalised_f_1d(f[:,iz], density[iz], vth[iz],
-                                                       evolve_density, evolve_ppar)
+                                                       evolve_density, evolve_p)
     end
     return f_unnorm
 end
