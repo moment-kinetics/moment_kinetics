@@ -4,6 +4,7 @@ using ConcreteStructs
 using LinearAlgebra
 using MPI
 using MPISchurComplements
+using MPISchurComplements.FakeMPILUs # This is not performant, use only for comparison/testing.
 using MPIStaticCondensations
 using OrderedCollections
 using SparseArrays
@@ -1006,7 +1007,7 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
     total_size_coords = prod(coord_sizes)
     outer_coord_sizes = Tuple(isa(c, coordinate) ? c.n : c for c ∈ outer_coords)
 
-    if preconditioner_type === Val(:electron_schur_complement)
+    if preconditioner_type ∈ (Val(:electron_static_condensation), Val(:electron_schur_complement))
         function get_schur_precon()
             precon = create_jacobian_info(coords, spectral; comm=comm_anyzv_subblock[],
                                           synchronize=_anyzv_subblock_synchronize,
@@ -1084,16 +1085,24 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
                 precon_timer = nothing
             end
             precon_check_lu = @debug_consistency_checks_ifelse(true, false)
-            Alu = mpi_static_condensation(mpisc_dims;
-                                          level_multiplier=nl_solver_input.MPIStaticCondensation_level_multiplier,
-                                          sparse_C_blocks=nl_solver_input.MPIStaticCondensation_sparse_C_blocks,
-                                          comm=comm_world, distributed_comm=coords.z.comm,
-                                          shared_comm=comm_anyzv_subblock[],
-                                          allocate_shared_float=precon_allocate_shared_float,
-                                          allocate_shared_int=precon_allocate_shared_int,
-                                          synchronize_shared=precon_synchronize,
-                                          schur_tile_size=schur_tile_size,
-                                          timer=precon_timer, check_lu=precon_check_lu)
+            if preconditioner_type === Val(:electron_static_condensation)
+                Alu = mpi_static_condensation(mpisc_dims;
+                                              level_multiplier=nl_solver_input.MPIStaticCondensation_level_multiplier,
+                                              sparse_C_blocks=nl_solver_input.MPIStaticCondensation_sparse_C_blocks,
+                                              comm=comm_world, distributed_comm=coords.z.comm,
+                                              shared_comm=comm_anyzv_subblock[],
+                                              allocate_shared_float=precon_allocate_shared_float,
+                                              allocate_shared_int=precon_allocate_shared_int,
+                                              synchronize_shared=precon_synchronize,
+                                              schur_tile_size=schur_tile_size,
+                                              timer=precon_timer, check_lu=precon_check_lu)
+            elseif preconditioner_type === Val(:electron_schur_complement)
+                Alu = FakeMPILU(A, pdf_global_indices, pdf_global_indices;
+                                comm=coords.z.comm, shared_comm=comm_anyzv_subblock[],
+                                use_sparse=true, skip_factorization=true)
+            else
+                error("preconditioner_type=$preconditioner_type unexpected in this block")
+            end
 
             schur_complement_factorization =
                 mpi_schur_complement(Alu, B, C, D, pdf_global_indices,
@@ -1103,8 +1112,8 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
                                      allocate_shared_float=precon_allocate_shared_float,
                                      allocate_shared_int=precon_allocate_shared_int,
                                      synchronize_shared=precon_synchronize,
-                                     skip_factorization=true,
-                                     timer=(timeit_debug_enabled() ? global_timer : nothing))
+                                     skip_factorization=true, check_lu=precon_check_lu,
+                                     timer=precon_timer)
 
             return schur_complement_factorization, precon, moments_buffer
         end
@@ -1352,7 +1361,7 @@ end
     ir::mk_int
 end
 
-function (recalc::kinetic_electron_recalculate_schur_complement!)()
+@timeit global_timer (recalc::kinetic_electron_recalculate_schur_complement!)() = begin
     nl_solver_params = recalc.nl_solver_params
     f_electron_new = recalc.f_electron_new
     electron_p_new = recalc.electron_p_new
@@ -1395,8 +1404,9 @@ global_rank[] == 0 && println("recalculating precon")
     B = get_joined_array(precon, 1:1, 2:precon.n_entries)
     C = get_joined_array(precon, 2:precon.n_entries, 1:1)
     D = get_joined_array(precon, 2:precon.n_entries, 2:precon.n_entries)
-    @timeit_debug "update_schur_complement!" update_schur_complement!(schur_complement_factorization,
-                                                                      A, sparse(B), sparse(C), D)
+    @timeit global_timer "update_schur_complement!" update_schur_complement!(schur_complement_factorization,
+                                                                             A, sparse(B),
+                                                                             sparse(C), D)
 
     nl_solver_params.preconditioners[ir] =
         (schur_complement_factorization, precon, moments_buffer)
@@ -1415,7 +1425,7 @@ end
     ir::mk_int
 end
 
-@timeit_debug global_timer (schur_complement_pre::kinetic_electron_schur_complement_precon!)(x) = begin
+@timeit global_timer (schur_complement_pre::kinetic_electron_schur_complement_precon!)(x) = begin
     nl_solver_params = schur_complement_pre.nl_solver_params
     scratch_dummy = schur_complement_pre.scratch_dummy
     buffer_1 = schur_complement_pre.buffer_1
@@ -1444,7 +1454,7 @@ end
         end
     end
 
-    @timeit_debug global_timer "ldiv!" ldiv!(schur_complement_factorization,
+    @timeit global_timer "ldiv!" ldiv!(schur_complement_factorization,
                                              vec(precon_f), moments_buffer)
 
     @begin_anyzv_z_region()
@@ -1548,7 +1558,7 @@ end
     ir::mk_int
 end
 
-function (recalc::kinetic_electron_recalculate_lu!)()
+@timeit global_timer (recalc::kinetic_electron_recalculate_lu!)() = begin
     nl_solver_params = recalc.nl_solver_params
     f_electron_new = recalc.f_electron_new
     electron_p_new = recalc.electron_p_new
@@ -1592,7 +1602,7 @@ global_rank[] == 0 && println("recalculating precon")
         if size(orig_lu) == (1, 1)
             # Have not properly created the LU decomposition before, so
             # cannot reuse it.
-            @timeit_debug global_timer "lu" nl_solver_params.preconditioners[ir] =
+            @timeit global_timer "lu" nl_solver_params.preconditioners[ir] =
                 (lu(get_sparse_joined_array(precon)), precon, input_buffer,
                  output_buffer)
         else
@@ -1600,14 +1610,14 @@ global_rank[] == 0 && println("recalculating precon")
             # has the same sparsity pattern, so by using `lu!()` we can
             # reuse some setup.
             try
-                @timeit_debug global_timer "lu!" lu!(orig_lu, get_sparse_joined_array(precon); check=false)
+                @timeit global_timer "lu!" lu!(orig_lu, get_sparse_joined_array(precon); check=false)
             catch e
                 if !isa(e, ArgumentError)
                     rethrow(e)
                 end
                 println("Sparsity pattern of matrix changed, rebuilding "
                         * "LU from scratch")
-                @timeit_debug global_timer "lu" orig_lu = lu(get_sparse_joined_array(precon))
+                @timeit global_timer "lu" orig_lu = lu(get_sparse_joined_array(precon))
             end
             nl_solver_params.preconditioners[ir] =
                 (orig_lu, precon, input_buffer, output_buffer)
@@ -1631,7 +1641,7 @@ end
     ir::mk_int
 end
 
-@timeit_debug global_timer (lu_pre::kinetic_electron_lu_precon!)(x) = begin
+@timeit global_timer (lu_pre::kinetic_electron_lu_precon!)(x) = begin
     nl_solver_params = lu_pre.nl_solver_params
     scratch_dummy = lu_pre.scratch_dummy
     buffer_1 = lu_pre.buffer_1
@@ -1679,7 +1689,7 @@ end
 
     @begin_anyzv_region()
     @anyzv_serial_region begin
-        @timeit_debug global_timer "ldiv!" ldiv!(this_output_buffer, precon_lu, this_input_buffer)
+        @timeit global_timer "ldiv!" ldiv!(this_output_buffer, precon_lu, this_input_buffer)
     end
 
     @begin_anyzv_region()
@@ -1791,7 +1801,7 @@ end
     add_identity::Bool
 end
 
-function (recalc_adi::kinetic_electron_recalculate_adi!)()
+@timeit global_timer (recalc_adi::kinetic_electron_recalculate_adi!)() = begin
     nl_solver_params = recalc_adi.nl_solver_params
     f_electron_new = recalc_adi.f_electron_new
     electron_p_new = recalc_adi.electron_p_new
@@ -2067,7 +2077,7 @@ end
     scratch_dummy
 end
 
-@timeit_debug global_timer (adi_pre::kinetic_electron_adi_precon!)(x) = begin
+@timeit global_timer (adi_pre::kinetic_electron_adi_precon!)(x) = begin
     nl_solver_params = adi_pre.nl_solver_params
     z = adi_pre.z
     vperp = adi_pre.vperp
@@ -2302,7 +2312,8 @@ function get_electron_preconditioner(nl_solver_params, f_electron_new, electron_
                                      scratch_dummy, external_source_settings,
                                      num_diss_params, t_params, ion_dt, ir, evolve_p,
                                      add_identity=true)
-    if nl_solver_params.preconditioner_type === Val(:electron_schur_complement)
+    if nl_solver_params.preconditioner_type ∈ (Val(:electron_static_condensation),
+                                               Val(:electron_schur_complement))
         return get_electron_schur_complement_preconditioner(
                    nl_solver_params, f_electron_new, electron_p_new, buffer_1, buffer_2,
                    buffer_3, buffer_4, electron_density, electron_upar, this_phi, moments,

@@ -2780,8 +2780,8 @@ function test_jacobian_inversion(test_input; rtol=2.0e-11)
             pop!(this_test_input["z"], "nelement_local", 1)
         end
         if diss
-            if this_test_input["timestepping"]["kinetic_electron_preconditioner"] == "schur_complement"
-                # schur_complement preconditioner does not currently support diffusion.
+            if this_test_input["timestepping"]["kinetic_electron_preconditioner"] == "static_condensation"
+                # static_condensation preconditioner does not currently support diffusion.
                 continue
             end
         else
@@ -2913,9 +2913,9 @@ function runtests()
     @testset "Jacobian matrix " verbose=use_verbose begin
         println("Jacobian matrix")
         precon_list = String[]
-        push!(precon_list, "schur_complement")
+        push!(precon_list, "static_condensation")
         # Test this by default as it has a different structure in the Jacobian matrix than
-        # `schur_complement`, so although "lu" is used more often, this provides more test
+        # `static_condensation`, so although "lu" is used more often, this provides more test
         # coverage.
         push!(precon_list, "lu_no_separate_moments")
         @long push!(precon_list, "lu_separate_third_moment")
