@@ -9,7 +9,7 @@ export jacobian_info, create_jacobian_info, jacobian_initialize_identity!,
        CompoundTerm, NullTerm, add_term_to_Jacobian!,
        add_periodicity_constraint_to_jacobian!
 
-using ..array_allocation: allocate_shared_float, allocate_float
+using ..array_allocation: allocate_shared_float, allocate_float, allocate_shared_int, allocate_int
 using ..communication
 using ..debugging
 using ..looping
@@ -22,6 +22,7 @@ using BlockBandedMatrices
 using MPI
 using MPIStaticCondensations: create_dimension, get_shared_sparse_matrix_csc_buffer
 using SparseArrays
+using SparseArrays: FixedSparseCSC
 
 # Stores some information from `coordinate` struct, but has no type parameters so can be
 # stored in a Vector or looked up from a Tuple without type instability.
@@ -40,6 +41,7 @@ struct mini_coordinate
     nrank::mk_int
     periodic::Bool
     radau_first_element::Bool
+    bc::String
 
     function mini_coordinate(c::coordinate)
         return new((f === :name ? Symbol(getfield(c, f)) : getfield(c,f)
@@ -244,7 +246,16 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
                                       Tuple(getfield(looping.loop_ranges_store[rt], d) for d ∈ v)
                                       for (rt,v) ∈ zip(state_vector_region_types,state_vector_dims))
     # Flattened ranges for shared-memory-parallel loops over each variable.
-    function get_local_flattened_range(n)
+    function get_local_flattened_range(block_or_n)
+        if isa(block_or_n, Integer)
+            n = block_or_n
+        elseif isa(block_or_n, BlockSkylineMatrix)
+            n = length(block_or_n.data)
+        elseif isa(block_or_n, FixedSparseCSC)
+            n = length(block_or_n.nzval)
+        else
+            error("Unsupported type $(typeof(block_or_n)) for `block_or_n`")
+        end
         if comm === nothing
             local_range = 1:n
         else
@@ -336,8 +347,8 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
                     mpisc_dims =
                         get_MPIStaticCondensations_Dimensions_from_coordinates(state_vector_coords[i])
                     jac_comm = comm
-                    jac_allocate_float = (args...; comm=nothing, kwargs...) -> zeros(mk_float, args...; kwargs...)
-                    jac_allocate_int = (args...; comm=nothing, kwargs...) -> zeros(mk_int, args...; kwargs...)
+                    jac_allocate_float = (args...; comm=nothing, kwargs...) -> allocate_float(args...; kwargs...)
+                    jac_allocate_int = (args...; comm=nothing, kwargs...) -> allocate_int(args...; kwargs...)
                     return get_shared_sparse_matrix_csc_buffer(mpisc_dims, MPI.COMM_SELF,
                                                                jac_allocate_float,
                                                                jac_allocate_int;
@@ -376,8 +387,8 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
                     mpisc_dims =
                         get_MPIStaticCondensations_Dimensions_from_coordinates(state_vector_coords[i])
                     jac_comm = comm
-                    jac_allocate_shared_float = (args...; comm=nothing, kwargs...) -> allocate_shared_float(args...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
-                    jac_allocate_shared_int = (args...; comm=nothing, kwargs...) -> allocate_shared_int(args...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
+                    jac_allocate_shared_float = (dim_sizes...; comm=nothing, kwargs...) -> allocate_shared_float(ntuple(i->Symbol("$i")=>dim_sizes[i], length(dim_sizes))...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
+                    jac_allocate_shared_int = (dim_sizes...; comm=nothing, kwargs...) -> allocate_shared_int(ntuple(i->Symbol("$i")=>dim_sizes[i], length(dim_sizes))...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
                     return get_shared_sparse_matrix_csc_buffer(mpisc_dims, comm,
                                                                jac_allocate_shared_float,
                                                                jac_allocate_shared_int;
@@ -417,7 +428,7 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
 
     if sparse_storage
         function get_row_local_ranges(row)
-            return Tuple(get_local_flattened_range(length(block.data)) for block ∈ row)
+            return Tuple(get_local_flattened_range(block) for block ∈ row)
         end
         local_block_ranges = Tuple(get_row_local_ranges(r) for r ∈ jacobian_matrix)
 
@@ -545,13 +556,19 @@ Initialize `jacobian.matrix` to zero.
 @timeit_debug global_timer jacobian_initialize_zero!(jacobian::jacobian_info) = begin
     jacobian_matrix = jacobian.matrix
     n_entries = jacobian.n_entries
-    if isa(jacobian_matrix[1][1], BlockSkylineMatrix)
+    if isa(jacobian_matrix[1][1], FixedSparseCSC)
         local_block_ranges = jacobian.local_block_ranges
         for col_variable ∈ 1:n_entries
             for row_variable ∈ 1:n_entries
                 this_block = jacobian_matrix[row_variable][col_variable]
                 local_range = local_block_ranges[row_variable][col_variable]
-                this_block.data[local_range] .= 0.0
+                if isa(this_block, FixedSparseCSC)
+                    this_block.nzval[local_range] .= 0.0
+                elseif isa(this_block, BlockSkylineMatrix)
+                    this_block.data[local_range] .= 0.0
+                else
+                    error("Unrecognised type for block in `jacobian`")
+                end
             end
         end
     else
@@ -1485,8 +1502,7 @@ function get_overlap_factor(indices::NTuple{N,mk_int}, coords::NTuple{N,mini_coo
 end
 
 """
-    add_term_to_Jacobian_row!(jacobian::jacobian_info,
-                              jacobian_row::NTuple{N,<:AbstractVector{mk_float}} where N,
+    add_term_to_Jacobian_row!(jacobian::jacobian_info, jacobian_row::Tuple,
                               rows_variable::Symbol, prefactor::mk_float,
                               terms::EquationTerm, indices::Tuple,
                               boundary_speed, overlap_factor::mk_float,
@@ -1496,8 +1512,7 @@ Traverse the tree of EquationTerms, accumulating the prefactors until reaching a
 (`kind = ETsimple`) that represents a state vector variable, which makes a contribution to
 the Jacobian.
 """
-function add_term_to_Jacobian_row!(jacobian::jacobian_info,
-                                   jacobian_row::NTuple{N,<:AbstractVector{mk_float}} where N,
+function add_term_to_Jacobian_row!(jacobian::jacobian_info, jacobian_row::Tuple,
                                    rows_variable::Symbol, prefactor::mk_float,
                                    terms::EquationTerm, indices::Tuple, boundary_speed,
                                    overlap_factor::mk_float,
@@ -1573,8 +1588,7 @@ end
 
 # `term` is just one of the state vector variables, so add its prefactor to the
 # corresponding column.
-function add_simple_term_to_Jacobian_row!(jacobian::jacobian_info,
-                                          jacobian_row::NTuple{N,<:AbstractVector{mk_float}} where N,
+function add_simple_term_to_Jacobian_row!(jacobian::jacobian_info, jacobian_row::Tuple,
                                           rows_variable::Symbol, prefactor::mk_float,
                                           term::EquationTerm, indices::Tuple,
                                           overlap_factor::mk_float)
@@ -1598,8 +1612,7 @@ end
 # corresponding to the row is an element boundary, depending on upwinding), and insert
 # `prefactor` times a column of the derivative matrix into those points.
 function add_derivative_term_to_Jacobian_row!(jacobian::jacobian_info,
-                                              jacobian_row::NTuple{N,<:AbstractVector{mk_float}} where N,
-                                              rows_variable::Symbol,
+                                              jacobian_row::Tuple, rows_variable::Symbol,
                                               prefactor::mk_float, term::EquationTerm,
                                               indices::Union{Tuple,Vector},
                                               derivative_overlap_factors::NamedTuple)
@@ -1867,8 +1880,7 @@ end
 # improved by special handling of the mass matrix (or matrices, e.g. for each velocity
 # dimension) in future.
 function add_second_derivative_term_to_Jacobian_row!(
-             jacobian::jacobian_info,
-             jacobian_row::NTuple{N,<:AbstractVector{mk_float}} where N,
+             jacobian::jacobian_info, jacobian_row::Tuple,
              rows_variable::Symbol, prefactor::mk_float, term::EquationTerm,
              indices::Union{Tuple,Vector}, derivative_overlap_factors::NamedTuple)
     @inbounds begin
@@ -1908,8 +1920,7 @@ end
 # `term` represents an integral of a state vector variable (or possibly an integral of a
 # derivative of a state vector variable). Loops over the columns corresponding to every
 # point in the dimensions `term.integrals`.
-function add_integral_term_to_Jacobian_row!(jacobian::jacobian_info,
-                                            jacobian_row::NTuple{N,<:AbstractVector{mk_float}} where N,
+function add_integral_term_to_Jacobian_row!(jacobian::jacobian_info, jacobian_row::Tuple,
                                             rows_variable::Symbol, prefactor::mk_float,
                                             term::EquationTerm, row_indices::Tuple,
                                             overlap_factor::mk_float,
@@ -1937,8 +1948,7 @@ end
 # Separate internal function so that `integral_dim_sizes` can be a Tuple, allowing
 # `CartesianIndices(integral_dim_sizes)` to be type stable as the length of
 # `integral_dim_sizes` is known at compile time.
-function add_integral_term_to_Jacobian_row!(jacobian::jacobian_info,
-                                            jacobian_row::NTuple{N,<:AbstractVector{mk_float}} where N,
+function add_integral_term_to_Jacobian_row!(jacobian::jacobian_info, jacobian_row::Tuple,
                                             rows_variable::Symbol, prefactor::mk_float,
                                             term::EquationTerm, row_indices::Tuple,
                                             integrand_variable, integral_dim_sizes,
