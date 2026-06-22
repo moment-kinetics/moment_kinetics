@@ -4028,12 +4028,14 @@ boundary condition on those entries of δg (when the right-hand-side is set to z
                        vpa, vpa_spectral)
 
             # Reverse the sign of the elements we just filled
-            jacobian_zbegin[sigma_ind:last_nonzero_ind,1:sigma_ind-1] .*= -1.0
-
             if plus_vcut_fraction > 0.5
-                jacobian_zbegin[last_nonzero_ind,1:sigma_ind-1] .*= plus_vcut_fraction - 0.5
+                for col ∈ 1:sigma_ind-1
+                    jacobian_zbegin[last_nonzero_ind,col] *= plus_vcut_fraction - 0.5
+                end
             else
-                jacobian_zbegin[last_nonzero_ind,1:sigma_ind-1] .*= plus_vcut_fraction + 0.5
+                for col ∈ 1:sigma_ind-1
+                    jacobian_zbegin[last_nonzero_ind,col] *= plus_vcut_fraction + 0.5
+                end
             end
 
             # Fill in elements giving response to changes in electron_p
@@ -4521,12 +4523,18 @@ boundary condition on those entries of δg (when the right-hand-side is set to z
                        vpa, vpa_spectral)
 
             # Reverse the sign of the elements we just filled
-            jacobian_zend[first_nonzero_ind:sigma_ind,sigma_ind+1:end] .*= -1.0
+            for col ∈ sigma_ind+1:size(jacobian_zend, 2), row ∈ first_nonzero_ind:sigma_ind
+                jacobian_zend[row,col] *= -1.0
+            end
 
             if minus_vcut_fraction < 0.5
-                jacobian_zend[first_nonzero_ind,sigma_ind+1:end] .*= 0.5 - minus_vcut_fraction
+                for col ∈ sigma_ind+1:size(jacobian_zend, 2)
+                    jacobian_zend[first_nonzero_ind,col] *= 0.5 - minus_vcut_fraction
+                end
             else
-                jacobian_zend[first_nonzero_ind,sigma_ind+1:end] .*= 1.5 - minus_vcut_fraction
+                for col ∈ sigma_ind+1:size(jacobian_zend, 2)
+                    jacobian_zend[first_nonzero_ind,col] *= 1.5 - minus_vcut_fraction
+                end
             end
 
             # Fill in elements giving response to changes in electron_p
