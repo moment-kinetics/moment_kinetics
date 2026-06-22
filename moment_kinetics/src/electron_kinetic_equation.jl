@@ -1113,6 +1113,7 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
         pdf_plus_p_plus_constraints_size = total_size_coords + coords.z.n + 6 * coords.z.n
         preconditioners = [(lu(sparse(1.0*I, 1, 1)),
                             create_jacobian_info(coords, spectral;
+                                                 blockskyline_topleft=true,
                                                  comm=comm_anyzv_subblock[],
                                                  synchronize=_anyzv_subblock_synchronize,
                                                      handle_overlaps=Val(false),
@@ -1144,6 +1145,7 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
         pdf_plus_p_plus_constraints_size = total_size_coords + coords.z.n + 4 * coords.z.n
         preconditioners = [(lu(sparse(1.0*I, 1, 1)),
                             create_jacobian_info(coords, spectral;
+                                                 blockskyline_topleft=true,
                                                  comm=comm_anyzv_subblock[],
                                                  synchronize=_anyzv_subblock_synchronize,
                                                      handle_overlaps=Val(false),
@@ -1172,6 +1174,7 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
         pdf_plus_p_plus_constraints_size = total_size_coords + coords.z.n + coords.z.n
         preconditioners = [(lu(sparse(1.0*I, 1, 1)),
                             create_jacobian_info(coords, spectral;
+                                                 blockskyline_topleft=true,
                                                  comm=comm_anyzv_subblock[],
                                                  synchronize=_anyzv_subblock_synchronize,
                                                      handle_overlaps=Val(false),
@@ -1197,6 +1200,7 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
         pdf_plus_p_size = total_size_coords + coords.z.n
         preconditioners = [(lu(sparse(1.0*I, 1, 1)),
                             create_jacobian_info(coords, spectral;
+                                                 blockskyline_topleft=true,
                                                  comm=comm_anyzv_subblock[],
                                                  synchronize=_anyzv_subblock_synchronize,
                                                      handle_overlaps=Val(false),
@@ -1228,6 +1232,7 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
             v_solve_buffer = allocate_float(v_solve_n)
             v_solve_buffer2 = allocate_float(v_solve_n)
             v_solve_jacobian = create_jacobian_info(coords, spectral;
+                                                    blockskyline_topleft=true,
                                                     comm=nothing,
                                                     synchronize=nothing,
                                                     handle_overlaps=Val(false),
@@ -1253,17 +1258,20 @@ function get_electron_preconditioners(preconditioner_type, nl_solver_input, coor
             z_solve_buffer = allocate_float(z_solve_n)
             z_solve_buffer2 = allocate_float(z_solve_n)
             z_solve_jacobian = create_jacobian_info(coords, spectral; comm=nothing,
+                                                    blockskyline_topleft=true,
                                                     synchronize=nothing,
                                                     handle_overlaps=Val(false),
                                                     boundary_skip_funcs=boundary_skip_funcs.z_solve,
                                                     electron_pdf=(nothing,(:z,), false))
             z_solve_jacobian_p = create_jacobian_info(coords, spectral; comm=nothing,
+                                                      blockskyline_topleft=true,
                                                       synchronize=nothing,
                                                       handle_overlaps=Val(false),
                                                       boundary_skip_funcs=boundary_skip_funcs.z_solve,
                                                       electron_p=(nothing,(:z,), false))
 
             explicit_jacobian = create_jacobian_info(coords, spectral; comm=comm_anyzv_subblock[],
+                                                     blockskyline_topleft=true,
                                                      synchronize=_anyzv_subblock_synchronize,
                                                      handle_overlaps=Val(false),
                                                      boundary_skip_funcs=boundary_skip_funcs.full,
@@ -1387,7 +1395,8 @@ global_rank[] == 0 && println("recalculating precon")
     B = get_joined_array(precon, 1:1, 2:precon.n_entries)
     C = get_joined_array(precon, 2:precon.n_entries, 1:1)
     D = get_joined_array(precon, 2:precon.n_entries, 2:precon.n_entries)
-    @timeit_debug "update_schur_complement!" update_schur_complement!(schur_complement_factorization, A, B, C, D)
+    @timeit_debug "update_schur_complement!" update_schur_complement!(schur_complement_factorization,
+                                                                      A, sparse(B), sparse(C), D)
 
     nl_solver_params.preconditioners[ir] =
         (schur_complement_factorization, precon, moments_buffer)

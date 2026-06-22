@@ -201,8 +201,8 @@ a shared-memory array).
 function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=comm_block[],
                               synchronize::Union{Function,Nothing}=_block_synchronize,
                               boundary_skip_funcs::BSF=nothing,
-                              handle_overlaps::Val=Val(true), sparse_storage=true,
-                              kwargs...) where {BSF}
+                              handle_overlaps::Val=Val(true), sparse_storage::Bool=true,
+                              blockskyline_topleft::Bool=false, kwargs...) where {BSF}
 
     @debug_consistency_checks all(all(d ∈ keys(coords) for d ∈ v[2]) for v ∈ values(kwargs)) || error("Some coordinate required by the state variables were not included in `coords`.")
 
@@ -341,7 +341,7 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
         # No shared memory needed
         function get_sub_matrix(i, j)
             if sparse_storage
-                if i == 1 && j == 1
+                if i == 1 && j == 1 && !blockskyline_topleft
                     # Create FixedSparseCSC buffer for the main distribution-function
                     # block of the Jacobian matrix.
                     mpisc_dims =
@@ -381,7 +381,7 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
     else
         function get_shared_sub_matrix(i, j)
             if sparse_storage
-                if i == 1 && j == 1
+                if i == 1 && j == 1 && !blockskyline_topleft
                     # Create FixedSparseCSC buffer for the main distribution-function
                     # block of the Jacobian matrix.
                     mpisc_dims =
