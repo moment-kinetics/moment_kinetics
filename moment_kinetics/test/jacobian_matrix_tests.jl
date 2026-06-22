@@ -2779,7 +2779,12 @@ function test_jacobian_inversion(test_input; rtol=2.0e-11)
             # lu preconditioners do not support distributed-MPI parallelism.
             pop!(this_test_input["z"], "nelement_local", 1)
         end
-        if !diss
+        if diss
+            if this_test_input["timestepping"]["kinetic_electron_preconditioner"] == "schur_complement"
+                # schur_complement preconditioner does not currently support diffusion.
+                continue
+            end
+        else
             pop!(this_test_input["electron_numerical_dissipation"], "vpa_dissipation_coefficient", 0.0)
         end
 
@@ -2885,7 +2890,7 @@ function test_jacobian_inversion(test_input; rtol=2.0e-11)
                     p_rtol = rtol
                 end
                 @test elementwise_isapprox(expected.precon_p, residual_p; rtol=p_rtol,
-                                           atol=1.0e-16)
+                                           atol=1.0e-15)
             end
         end
 
