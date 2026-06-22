@@ -336,11 +336,11 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
                     mpisc_dims =
                         get_MPIStaticCondensations_Dimensions_from_coordinates(state_vector_coords[i])
                     jac_comm = comm
-                    jac_allocate_shared_float = (args...; comm=nothing, kwargs...) -> allocate_shared_float(args...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
-                    jac_allocate_shared_int = (args...; comm=nothing, kwargs...) -> allocate_shared_int(args...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
-                    return get_shared_sparse_matrix_csc_buffer(mpisc_dims, comm,
-                                                               jac_allocate_shared_float,
-                                                               jac_allocate_shared_int;
+                    jac_allocate_float = (args...; comm=nothing, kwargs...) -> zeros(mk_float, args...; kwargs...)
+                    jac_allocate_int = (args...; comm=nothing, kwargs...) -> zeros(mk_int, args...; kwargs...)
+                    return get_shared_sparse_matrix_csc_buffer(mpisc_dims, MPI.COMM_SELF,
+                                                               jac_allocate_float,
+                                                               jac_allocate_int;
                                                                ind_type=mk_int)
                 else
                     if state_vector_coords[i][end].name != state_vector_coords[j][end].name
@@ -370,27 +370,41 @@ function create_jacobian_info(coords::NamedTuple, spectral::NamedTuple; comm=com
     else
         function get_shared_sub_matrix(i, j)
             if sparse_storage
-                if state_vector_coords[i][end].name != state_vector_coords[j][end].name
-                    error("Cannot create block-banded matrix for Jacobian block for "
-                          * "block ($i,$j) when outer coordinates "
-                          * "($(state_vector_coords[i][end].name) and "
-                          * "$(state_vector_coords[j][end].name)) are not the same.")
+                if i == 1 && j == 1
+                    # Create FixedSparseCSC buffer for the main distribution-function
+                    # block of the Jacobian matrix.
+                    mpisc_dims =
+                        get_MPIStaticCondensations_Dimensions_from_coordinates(state_vector_coords[i])
+                    jac_comm = comm
+                    jac_allocate_shared_float = (args...; comm=nothing, kwargs...) -> allocate_shared_float(args...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
+                    jac_allocate_shared_int = (args...; comm=nothing, kwargs...) -> allocate_shared_int(args...; kwargs..., comm=(comm===nothing ? jac_comm : comm))
+                    return get_shared_sparse_matrix_csc_buffer(mpisc_dims, comm,
+                                                               jac_allocate_shared_float,
+                                                               jac_allocate_shared_int;
+                                                               ind_type=mk_int)
+                else
+                    if state_vector_coords[i][end].name != state_vector_coords[j][end].name
+                        error("Cannot create block-banded matrix for Jacobian block for "
+                              * "block ($i,$j) when outer coordinates "
+                              * "($(state_vector_coords[i][end].name) and "
+                              * "$(state_vector_coords[j][end].name)) are not the same.")
+                    end
+                    # Need to use lower level interface so that the memory backing the
+                    # BlockSkylineMatrix is a shared-memory array allocated with
+                    # allocate_shared_float().
+                    outer_coord = state_vector_coords[i][end]
+                    row_block_sizes, column_block_sizes, off_diagonals =
+                        get_block_sizes(outer_coord.nelement_local, outer_coord.ngrid,
+                                        state_vector_dim_steps[i][end],
+                                        state_vector_dim_steps[j][end])
+                    skyline_sizes = BlockBandedMatrices.BlockSkylineSizes(row_block_sizes,
+                                                                          column_block_sizes,
+                                                                          off_diagonals,
+                                                                          off_diagonals)
+                    data_length = BlockBandedMatrices.bb_numentries(skyline_sizes)
+                    data = allocate_shared_float(:jacobian_data=>data_length, comm=comm)
+                    return BlockBandedMatrices._BlockSkylineMatrix(data, skyline_sizes)
                 end
-                # Need to use lower level interface so that the memory backing the
-                # BlockSkylineMatrix is a shared-memory array allocated with
-                # allocate_shared_float().
-                outer_coord = state_vector_coords[i][end]
-                row_block_sizes, column_block_sizes, off_diagonals =
-                    get_block_sizes(outer_coord.nelement_local, outer_coord.ngrid,
-                                    state_vector_dim_steps[i][end],
-                                    state_vector_dim_steps[j][end])
-                skyline_sizes = BlockBandedMatrices.BlockSkylineSizes(row_block_sizes,
-                                                                      column_block_sizes,
-                                                                      off_diagonals,
-                                                                      off_diagonals)
-                data_length = BlockBandedMatrices.bb_numentries(skyline_sizes)
-                data = allocate_shared_float(:jacobian_data=>data_length, comm=comm)
-                return BlockBandedMatrices._BlockSkylineMatrix(data, skyline_sizes)
             else
                 return allocate_shared_float(Symbol(:jacobian_size, i)=>state_vector_sizes[i],
                                              Symbol(:jacobian_size, j)=>state_vector_sizes[j];
