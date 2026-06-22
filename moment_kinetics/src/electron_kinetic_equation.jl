@@ -4037,6 +4037,10 @@ boundary condition on those entries of δg (when the right-hand-side is set to z
                        vpa, vpa_spectral)
 
             # Reverse the sign of the elements we just filled
+            for col ∈ 1:sigma_ind-1, row ∈ sigma_ind:last_nonzero_ind
+                jacobian_zbegin[row,col] *= -1.0
+            end
+
             if plus_vcut_fraction > 0.5
                 for col ∈ 1:sigma_ind-1
                     jacobian_zbegin[last_nonzero_ind,col] *= plus_vcut_fraction - 0.5
